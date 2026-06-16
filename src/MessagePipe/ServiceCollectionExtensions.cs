@@ -274,6 +274,25 @@ namespace MessagePipe
             return builder;
         }
 
+        public static IMessagePipeBuilder AddInMemoryDistributedMessageBroker<TKey, TMessage>(this IMessagePipeBuilder builder)
+            where TKey : notnull
+        {
+            var options = builder.Services.FirstOrDefault(x => x.ServiceType == typeof(MessagePipeOptions));
+            if (options == null)
+            {
+                throw new ArgumentException($"Not yet added MessagePipeOptions, please call services.AddMessagePipe() before.");
+            }
+
+            var lifetime = ((MessagePipeOptions)options.ImplementationInstance!).InstanceLifetime;
+            var lt = (lifetime == InstanceLifetime.Scoped) ? ServiceLifetime.Scoped
+                   : (lifetime == InstanceLifetime.Singleton) ? ServiceLifetime.Singleton
+                   : ServiceLifetime.Transient;
+            builder.Services.Add(new ServiceDescriptor(typeof(IDistributedPublisher<TKey, TMessage>), sp => new InMemoryDistributedPublisher<TKey, TMessage>(sp.GetRequiredService<IAsyncPublisher<TKey, TMessage>>()), lt));
+            builder.Services.Add(new ServiceDescriptor(typeof(IDistributedSubscriber<TKey, TMessage>), sp => new InMemoryDistributedSubscriber<TKey, TMessage>(sp.GetRequiredService<IAsyncSubscriber<TKey, TMessage>>()), lt));
+
+            return builder;
+        }
+
         internal static void Add(this IServiceCollection services, Type serviceType, InstanceLifetime lifetime)
         {
             var lt = (lifetime == InstanceLifetime.Scoped) ? ServiceLifetime.Scoped
