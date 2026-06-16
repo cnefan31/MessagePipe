@@ -1,0 +1,492 @@
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using System.Collections.Generic;
+using System.Collections.Immutable;
+using System.Linq;
+using System.Text;
+
+namespace MessagePipe.SourceGenerator
+{
+    [Generator]
+    public class MessagePipeGenerator : IIncrementalGenerator
+    {
+        static readonly string[] MessagePipeInterfaces = new[]
+        {
+            "MessagePipe.IMessageHandler`1",
+            "MessagePipe.IAsyncMessageHandler`1",
+            "MessagePipe.IRequestHandlerCore`2",
+            "MessagePipe.IAsyncRequestHandlerCore`2",
+        };
+
+        static readonly string[] FilterBaseTypes = new[]
+        {
+            "MessagePipe.MessageHandlerFilter`1",
+            "MessagePipe.AsyncMessageHandlerFilter`1",
+            "MessagePipe.RequestHandlerFilter`2",
+            "MessagePipe.AsyncRequestHandlerFilter`2",
+        };
+
+        public void Initialize(IncrementalGeneratorInitializationContext context)
+        {
+            var typeDeclarations = context.SyntaxProvider.CreateSyntaxProvider(
+                predicate: static (node, _) => node is TypeDeclarationSyntax tds,
+                transform: static (ctx, ct) =>
+                {
+                    var tds = (TypeDeclarationSyntax)ctx.Node;
+                    var symbol = ctx.SemanticModel.GetDeclaredSymbol(tds, ct) as INamedTypeSymbol;
+                    if (symbol == null || symbol.IsAbstract || symbol.IsStatic) return null;
+
+                    var hasIgnoreAttr = symbol.GetAttributes().Any(a =>
+                        a.AttributeClass?.ToDisplayString() == "MessagePipe.IgnoreAutoRegistration");
+                    if (hasIgnoreAttr) return null;
+
+                    return symbol;
+                })
+                .Where(static x => x != null);
+
+            var collected = typeDeclarations.Collect();
+
+            // Second pass: scan for GetRequiredService<T>() calls to discover types used at call sites
+            var resolveCalls = context.SyntaxProvider.CreateSyntaxProvider(
+                predicate: static (node, _) => node is InvocationExpressionSyntax,
+                transform: static (ctx, ct) =>
+                {
+                    var invocation = (InvocationExpressionSyntax)ctx.Node;
+                    var memberAccess = invocation.Expression as MemberAccessExpressionSyntax;
+                    if (memberAccess == null) return null;
+
+                    var methodName = memberAccess.Name.Identifier.ValueText;
+                    if (methodName != "GetRequiredService" && methodName != "GetService") return null;
+
+                    // Get the type argument from the generic method call
+                    if (memberAccess.Name is GenericNameSyntax genericName && genericName.TypeArgumentList.Arguments.Count > 0)
+                    {
+                        var typeArg = ctx.SemanticModel.GetTypeInfo(genericName.TypeArgumentList.Arguments[0], ct).Type;
+                        if (typeArg is INamedTypeSymbol namedType && namedType.IsGenericType)
+                        {
+                            return namedType;
+                        }
+                    }
+                    return null;
+                })
+                .Where(static x => x != null)
+                .Collect();
+
+            context.RegisterSourceOutput(collected.Combine(resolveCalls), static (spc, combined) =>
+            {
+                var (types, resolvedTypes) = combined;
+                var model = AnalyzeTypes(types!, resolvedTypes!);
+                var source = GenerateSource(model);
+                spc.AddSource("MessagePipeGeneratedInitializer.g.cs", source);
+            });
+        }
+
+        static GeneratorModel AnalyzeTypes(ImmutableArray<INamedTypeSymbol?> types, ImmutableArray<INamedTypeSymbol?> resolvedTypes)
+        {
+            var model = new GeneratorModel();
+
+            // Process types from GetRequiredService<T>() calls
+            foreach (var resolvedType in resolvedTypes)
+            {
+                if (resolvedType == null) continue;
+                var original = resolvedType.OriginalDefinition.ToDisplayString();
+                if (original.StartsWith("MessagePipe.IPublisher<") ||
+                    original.StartsWith("MessagePipe.ISubscriber<") ||
+                    original.StartsWith("MessagePipe.IAsyncPublisher<") ||
+                    original.StartsWith("MessagePipe.IAsyncSubscriber<") ||
+                    original.StartsWith("MessagePipe.IBufferedPublisher<") ||
+                    original.StartsWith("MessagePipe.IBufferedSubscriber<") ||
+                    original.StartsWith("MessagePipe.IBufferedAsyncPublisher<") ||
+                    original.StartsWith("MessagePipe.IBufferedAsyncSubscriber<") ||
+                    original.StartsWith("MessagePipe.ISingletonPublisher<") ||
+                    original.StartsWith("MessagePipe.ISingletonSubscriber<") ||
+                    original.StartsWith("MessagePipe.IScopedPublisher<") ||
+                    original.StartsWith("MessagePipe.IScopedSubscriber<") ||
+                    original.StartsWith("MessagePipe.ISingletonAsyncPublisher<") ||
+                    original.StartsWith("MessagePipe.ISingletonAsyncSubscriber<") ||
+                    original.StartsWith("MessagePipe.IScopedAsyncPublisher<") ||
+                    original.StartsWith("MessagePipe.IScopedAsyncSubscriber<") ||
+                    original.StartsWith("MessagePipe.IDistributedPublisher<") ||
+                    original.StartsWith("MessagePipe.IDistributedSubscriber<"))
+                {
+                    if (resolvedType.TypeArguments.Length == 2)
+                    {
+                        model.KeyedTypes.Add((resolvedType.TypeArguments[0].ToDisplayString(), resolvedType.TypeArguments[1].ToDisplayString()));
+                    }
+                    else if (resolvedType.TypeArguments.Length == 1)
+                    {
+                        model.KeylessMessageTypes.Add(resolvedType.TypeArguments[0].ToDisplayString());
+                    }
+                }
+            }
+
+            foreach (var type in types)
+            {
+                if (type == null) continue;
+
+                foreach (var iface in type.AllInterfaces)
+                {
+                    var originalDef = iface.OriginalDefinition.ToDisplayString();
+
+                    if (originalDef == "MessagePipe.IMessageHandler<TMessage>")
+                    {
+                        var msgType = iface.TypeArguments[0];
+                        model.MessageTypes.Add(msgType.ToDisplayString());
+                        model.KeylessMessageTypes.Add(msgType.ToDisplayString());
+                    }
+                    else if (originalDef == "MessagePipe.IAsyncMessageHandler<TMessage>")
+                    {
+                        var msgType = iface.TypeArguments[0];
+                        model.MessageTypes.Add(msgType.ToDisplayString());
+                        model.KeylessMessageTypes.Add(msgType.ToDisplayString());
+                    }
+                    else if (originalDef == "MessagePipe.IRequestHandlerCore<TRequest, TResponse>")
+                    {
+                        var reqType = iface.TypeArguments[0].ToDisplayString();
+                        var resType = iface.TypeArguments[1].ToDisplayString();
+                        model.RequestHandlers.Add(new HandlerRegistration
+                        {
+                            HandlerTypeName = type.ToDisplayString(),
+                            RequestType = reqType,
+                            ResponseType = resType,
+                            IsAsync = false,
+                        });
+                        model.MessageTypes.Add(reqType);
+                        model.MessageTypes.Add(resType);
+                    }
+                    else if (originalDef == "MessagePipe.IAsyncRequestHandlerCore<TRequest, TResponse>")
+                    {
+                        var reqType = iface.TypeArguments[0].ToDisplayString();
+                        var resType = iface.TypeArguments[1].ToDisplayString();
+                        model.RequestHandlers.Add(new HandlerRegistration
+                        {
+                            HandlerTypeName = type.ToDisplayString(),
+                            RequestType = reqType,
+                            ResponseType = resType,
+                            IsAsync = true,
+                        });
+                        model.MessageTypes.Add(reqType);
+                        model.MessageTypes.Add(resType);
+                    }
+                }
+
+                // Check base types for filters
+                var baseType = type.BaseType;
+                while (baseType != null)
+                {
+                    var baseOriginal = baseType.OriginalDefinition.ToDisplayString();
+
+                    if (baseOriginal == "MessagePipe.MessageHandlerFilter<TMessage>")
+                    {
+                        model.FilterTypes.Add(new FilterRegistration
+                        {
+                            TypeName = type.ToDisplayString(),
+                            FilterKind = FilterKind.MessageHandler,
+                            TypeArgs = new[] { baseType.TypeArguments[0].ToDisplayString() },
+                        });
+                        model.KeylessMessageTypes.Add(baseType.TypeArguments[0].ToDisplayString());
+                        break;
+                    }
+                    else if (baseOriginal == "MessagePipe.AsyncMessageHandlerFilter<TMessage>")
+                    {
+                        model.FilterTypes.Add(new FilterRegistration
+                        {
+                            TypeName = type.ToDisplayString(),
+                            FilterKind = FilterKind.AsyncMessageHandler,
+                            TypeArgs = new[] { baseType.TypeArguments[0].ToDisplayString() },
+                        });
+                        model.KeylessMessageTypes.Add(baseType.TypeArguments[0].ToDisplayString());
+                        break;
+                    }
+                    else if (baseOriginal == "MessagePipe.RequestHandlerFilter<TRequest, TResponse>")
+                    {
+                        model.FilterTypes.Add(new FilterRegistration
+                        {
+                            TypeName = type.ToDisplayString(),
+                            FilterKind = FilterKind.RequestHandler,
+                            TypeArgs = new[]
+                            {
+                                baseType.TypeArguments[0].ToDisplayString(),
+                                baseType.TypeArguments[1].ToDisplayString(),
+                            },
+                        });
+                        break;
+                    }
+                    else if (baseOriginal == "MessagePipe.AsyncRequestHandlerFilter<TRequest, TResponse>")
+                    {
+                        model.FilterTypes.Add(new FilterRegistration
+                        {
+                            TypeName = type.ToDisplayString(),
+                            FilterKind = FilterKind.AsyncRequestHandler,
+                            TypeArgs = new[]
+                            {
+                                baseType.TypeArguments[0].ToDisplayString(),
+                                baseType.TypeArguments[1].ToDisplayString(),
+                            },
+                        });
+                        break;
+                    }
+
+                    baseType = baseType.BaseType;
+                }
+
+                // Scan constructor parameters and fields for keyed Pub/Sub usage
+                foreach (var member in type.GetMembers())
+                {
+                    IEnumerable<ITypeSymbol> paramTypes;
+                    if (member is IMethodSymbol method && method.MethodKind == MethodKind.Constructor)
+                    {
+                        paramTypes = method.Parameters.Select(p => p.Type);
+                    }
+                    else if (member is IFieldSymbol field)
+                    {
+                        paramTypes = new[] { field.Type };
+                    }
+                    else if (member is IPropertySymbol prop)
+                    {
+                        paramTypes = new[] { prop.Type };
+                    }
+                    else
+                    {
+                        continue;
+                    }
+
+                    foreach (var paramType in paramTypes)
+                    {
+                        if (paramType is INamedTypeSymbol namedParam && namedParam.IsGenericType)
+                        {
+                            var paramOriginal = namedParam.OriginalDefinition.ToDisplayString();
+                            if (paramOriginal.StartsWith("MessagePipe.IPublisher<") ||
+                                paramOriginal.StartsWith("MessagePipe.ISubscriber<") ||
+                                paramOriginal.StartsWith("MessagePipe.IAsyncPublisher<") ||
+                                paramOriginal.StartsWith("MessagePipe.IAsyncSubscriber<") ||
+                                paramOriginal.StartsWith("MessagePipe.ISingletonPublisher<") ||
+                                paramOriginal.StartsWith("MessagePipe.ISingletonSubscriber<") ||
+                                paramOriginal.StartsWith("MessagePipe.IScopedPublisher<") ||
+                                paramOriginal.StartsWith("MessagePipe.IScopedSubscriber<") ||
+                                paramOriginal.StartsWith("MessagePipe.ISingletonAsyncPublisher<") ||
+                                paramOriginal.StartsWith("MessagePipe.ISingletonAsyncSubscriber<") ||
+                                paramOriginal.StartsWith("MessagePipe.IScopedAsyncPublisher<") ||
+                                paramOriginal.StartsWith("MessagePipe.IScopedAsyncSubscriber<") ||
+                                paramOriginal.StartsWith("MessagePipe.IDistributedPublisher<") ||
+                                paramOriginal.StartsWith("MessagePipe.IDistributedSubscriber<") ||
+                                paramOriginal.StartsWith("MessagePipe.IBufferedPublisher<") ||
+                                paramOriginal.StartsWith("MessagePipe.IBufferedSubscriber<") ||
+                                paramOriginal.StartsWith("MessagePipe.IBufferedAsyncPublisher<") ||
+                                paramOriginal.StartsWith("MessagePipe.IBufferedAsyncSubscriber<"))
+                            {
+                                if (namedParam.TypeArguments.Length == 2)
+                                {
+                                    var keyType = namedParam.TypeArguments[0].ToDisplayString();
+                                    var msgType = namedParam.TypeArguments[1].ToDisplayString();
+                                    model.KeyedTypes.Add((keyType, msgType));
+                                }
+                                else if (namedParam.TypeArguments.Length == 1)
+                                {
+                                    var msgType = namedParam.TypeArguments[0].ToDisplayString();
+                                    model.KeylessMessageTypes.Add(msgType);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Deduplicate
+            model.KeylessMessageTypes = new HashSet<string>(model.KeylessMessageTypes).ToList();
+            model.MessageTypes = new HashSet<string>(model.MessageTypes).ToList();
+            model.KeyedTypes = model.KeyedTypes.Distinct().ToList();
+
+            return model;
+        }
+
+        static string GenerateSource(GeneratorModel model)
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("// <auto-generated/>");
+            sb.AppendLine("#pragma warning disable CS8602");
+            sb.AppendLine("#pragma warning disable CS8603");
+            sb.AppendLine("#pragma warning disable CS8604");
+            sb.AppendLine();
+            sb.AppendLine("using Microsoft.Extensions.DependencyInjection;");
+            sb.AppendLine("using Microsoft.Extensions.DependencyInjection.Extensions;");
+            sb.AppendLine("using MessagePipe;");
+            sb.AppendLine("using System;");
+            sb.AppendLine();
+            sb.AppendLine("namespace MessagePipe");
+            sb.AppendLine("{");
+            sb.AppendLine("    /// <summary>");
+            sb.AppendLine("    /// AOT-safe extension methods for MessagePipe registration.");
+            sb.AppendLine("    /// Generated by MessagePipe.SourceGenerator.");
+            sb.AppendLine("    /// </summary>");
+            sb.AppendLine("    public static class MessagePipeAotExtensions");
+            sb.AppendLine("    {");
+            sb.AppendLine("        public static IMessagePipeBuilder AddMessagePipeAot(this IServiceCollection services)");
+            sb.AppendLine("        {");
+            sb.AppendLine("            return AddMessagePipeAot(services, _ => { });");
+            sb.AppendLine("        }");
+            sb.AppendLine();
+            sb.AppendLine("        public static IMessagePipeBuilder AddMessagePipeAot(this IServiceCollection services, Action<MessagePipeOptions> configure)");
+            sb.AppendLine("        {");
+            sb.AppendLine("            var options = new MessagePipeOptions();");
+            sb.AppendLine("            configure(options);");
+            sb.AppendLine("            services.AddSingleton(options);");
+            sb.AppendLine("            services.AddSingleton(typeof(MessagePipeDiagnosticsInfo));");
+            sb.AppendLine("            services.AddSingleton(typeof(EventFactory));");
+            sb.AppendLine("            services.AddSingleton(typeof(AttributeFilterProvider<MessageHandlerFilterAttribute>));");
+            sb.AppendLine("            services.AddSingleton(typeof(AttributeFilterProvider<AsyncMessageHandlerFilterAttribute>));");
+            sb.AppendLine("            services.AddSingleton(typeof(AttributeFilterProvider<RequestHandlerFilterAttribute>));");
+            sb.AppendLine("            services.AddSingleton(typeof(AttributeFilterProvider<AsyncRequestHandlerFilterAttribute>));");
+            sb.AppendLine("            services.AddSingleton(typeof(FilterAttachedMessageHandlerFactory));");
+            sb.AppendLine("            services.AddSingleton(typeof(FilterAttachedAsyncMessageHandlerFactory));");
+            sb.AppendLine("            services.AddSingleton(typeof(FilterAttachedRequestHandlerFactory));");
+            sb.AppendLine("            services.AddSingleton(typeof(FilterAttachedAsyncRequestHandlerFactory));");
+            sb.AppendLine();
+            sb.AppendLine("            var psLifetime = ConvertLifetime(options.InstanceLifetime);");
+            sb.AppendLine("            var rhLifetime = ConvertLifetime(options.RequestHandlerLifetime);");
+            sb.AppendLine("            var singletonLt = ServiceLifetime.Singleton;");
+            sb.AppendLine("            var scopedLt = ServiceLifetime.Scoped;");
+            sb.AppendLine();
+
+            // Keyless message types
+            foreach (var msgType in model.KeylessMessageTypes)
+            {
+                sb.AppendLine($"            // Keyless registrations for {msgType}");
+                EmitKeylessRegistrations(sb, msgType);
+            }
+
+            // Keyed message types
+            foreach (var (keyType, msgType) in model.KeyedTypes)
+            {
+                sb.AppendLine($"            // Keyed registrations for ({keyType}, {msgType})");
+                EmitKeyedRegistrations(sb, keyType, msgType);
+            }
+
+            // Request handlers
+            foreach (var handler in model.RequestHandlers)
+            {
+                sb.AppendLine($"            // Request handler: {handler.HandlerTypeName}");
+                if (!handler.IsAsync)
+                {
+                    sb.AppendLine($"            services.Add(new ServiceDescriptor(typeof(IRequestHandlerCore<{handler.RequestType}, {handler.ResponseType}>), typeof({handler.HandlerTypeName}), rhLifetime));");
+                    sb.AppendLine($"            services.Add(new ServiceDescriptor(typeof(IRequestHandler<{handler.RequestType}, {handler.ResponseType}>), typeof(RequestHandler<{handler.RequestType}, {handler.ResponseType}>), rhLifetime));");
+                    sb.AppendLine($"            services.Add(new ServiceDescriptor(typeof(IRequestAllHandler<{handler.RequestType}, {handler.ResponseType}>), typeof(RequestAllHandler<{handler.RequestType}, {handler.ResponseType}>), rhLifetime));");
+                }
+                else
+                {
+                    sb.AppendLine($"            services.Add(new ServiceDescriptor(typeof(IAsyncRequestHandlerCore<{handler.RequestType}, {handler.ResponseType}>), typeof({handler.HandlerTypeName}), rhLifetime));");
+                    sb.AppendLine($"            services.Add(new ServiceDescriptor(typeof(IAsyncRequestHandler<{handler.RequestType}, {handler.ResponseType}>), typeof(AsyncRequestHandler<{handler.RequestType}, {handler.ResponseType}>), rhLifetime));");
+                    sb.AppendLine($"            services.Add(new ServiceDescriptor(typeof(IAsyncRequestAllHandler<{handler.RequestType}, {handler.ResponseType}>), typeof(AsyncRequestAllHandler<{handler.RequestType}, {handler.ResponseType}>), rhLifetime));");
+                }
+                sb.AppendLine();
+            }
+
+            // Filter types
+            foreach (var filter in model.FilterTypes)
+            {
+                sb.AppendLine($"            // Filter: {filter.TypeName}");
+                sb.AppendLine($"            services.Add(new ServiceDescriptor(typeof({filter.TypeName}), typeof({filter.TypeName}), ServiceLifetime.Transient));");
+            }
+
+            sb.AppendLine();
+            sb.AppendLine("            return new MessagePipeBuilder(services);");
+            sb.AppendLine("        }");
+            sb.AppendLine();
+            sb.AppendLine("        static ServiceLifetime ConvertLifetime(InstanceLifetime lifetime)");
+            sb.AppendLine("        {");
+            sb.AppendLine("            return lifetime == InstanceLifetime.Scoped ? ServiceLifetime.Scoped");
+            sb.AppendLine("                 : lifetime == InstanceLifetime.Singleton ? ServiceLifetime.Singleton");
+            sb.AppendLine("                 : ServiceLifetime.Transient;");
+            sb.AppendLine("        }");
+            sb.AppendLine("    }");
+            sb.AppendLine("}");
+
+            return sb.ToString();
+        }
+
+        static void EmitKeylessRegistrations(StringBuilder sb, string msgType)
+        {
+            sb.AppendLine($"            services.Add(new ServiceDescriptor(typeof(MessageBrokerCore<{msgType}>), typeof(MessageBrokerCore<{msgType}>), psLifetime));");
+            sb.AppendLine($"            services.Add(new ServiceDescriptor(typeof(IPublisher<{msgType}>), typeof(MessageBroker<{msgType}>), psLifetime));");
+            sb.AppendLine($"            services.Add(new ServiceDescriptor(typeof(ISubscriber<{msgType}>), typeof(MessageBroker<{msgType}>), psLifetime));");
+            sb.AppendLine($"            services.Add(new ServiceDescriptor(typeof(AsyncMessageBrokerCore<{msgType}>), typeof(AsyncMessageBrokerCore<{msgType}>), psLifetime));");
+            sb.AppendLine($"            services.Add(new ServiceDescriptor(typeof(IAsyncPublisher<{msgType}>), typeof(AsyncMessageBroker<{msgType}>), psLifetime));");
+            sb.AppendLine($"            services.Add(new ServiceDescriptor(typeof(IAsyncSubscriber<{msgType}>), typeof(AsyncMessageBroker<{msgType}>), psLifetime));");
+            sb.AppendLine($"            services.Add(new ServiceDescriptor(typeof(BufferedMessageBrokerCore<{msgType}>), typeof(BufferedMessageBrokerCore<{msgType}>), psLifetime));");
+            sb.AppendLine($"            services.Add(new ServiceDescriptor(typeof(IBufferedPublisher<{msgType}>), typeof(BufferedMessageBroker<{msgType}>), psLifetime));");
+            sb.AppendLine($"            services.Add(new ServiceDescriptor(typeof(IBufferedSubscriber<{msgType}>), typeof(BufferedMessageBroker<{msgType}>), psLifetime));");
+            sb.AppendLine($"            services.Add(new ServiceDescriptor(typeof(BufferedAsyncMessageBrokerCore<{msgType}>), typeof(BufferedAsyncMessageBrokerCore<{msgType}>), psLifetime));");
+            sb.AppendLine($"            services.Add(new ServiceDescriptor(typeof(IBufferedAsyncPublisher<{msgType}>), typeof(BufferedAsyncMessageBroker<{msgType}>), psLifetime));");
+            sb.AppendLine($"            services.Add(new ServiceDescriptor(typeof(IBufferedAsyncSubscriber<{msgType}>), typeof(BufferedAsyncMessageBroker<{msgType}>), psLifetime));");
+            sb.AppendLine($"            services.Add(new ServiceDescriptor(typeof(SingletonMessageBrokerCore<{msgType}>), typeof(SingletonMessageBrokerCore<{msgType}>), singletonLt));");
+            sb.AppendLine($"            services.Add(new ServiceDescriptor(typeof(ISingletonPublisher<{msgType}>), typeof(SingletonMessageBroker<{msgType}>), singletonLt));");
+            sb.AppendLine($"            services.Add(new ServiceDescriptor(typeof(ISingletonSubscriber<{msgType}>), typeof(SingletonMessageBroker<{msgType}>), singletonLt));");
+            sb.AppendLine($"            services.Add(new ServiceDescriptor(typeof(SingletonAsyncMessageBrokerCore<{msgType}>), typeof(SingletonAsyncMessageBrokerCore<{msgType}>), singletonLt));");
+            sb.AppendLine($"            services.Add(new ServiceDescriptor(typeof(ISingletonAsyncPublisher<{msgType}>), typeof(SingletonAsyncMessageBroker<{msgType}>), singletonLt));");
+            sb.AppendLine($"            services.Add(new ServiceDescriptor(typeof(ISingletonAsyncSubscriber<{msgType}>), typeof(SingletonAsyncMessageBroker<{msgType}>), singletonLt));");
+            sb.AppendLine($"            services.Add(new ServiceDescriptor(typeof(ScopedMessageBrokerCore<{msgType}>), typeof(ScopedMessageBrokerCore<{msgType}>), scopedLt));");
+            sb.AppendLine($"            services.Add(new ServiceDescriptor(typeof(IScopedPublisher<{msgType}>), typeof(ScopedMessageBroker<{msgType}>), scopedLt));");
+            sb.AppendLine($"            services.Add(new ServiceDescriptor(typeof(IScopedSubscriber<{msgType}>), typeof(ScopedMessageBroker<{msgType}>), scopedLt));");
+            sb.AppendLine($"            services.Add(new ServiceDescriptor(typeof(ScopedAsyncMessageBrokerCore<{msgType}>), typeof(ScopedAsyncMessageBrokerCore<{msgType}>), scopedLt));");
+            sb.AppendLine($"            services.Add(new ServiceDescriptor(typeof(IScopedAsyncPublisher<{msgType}>), typeof(ScopedAsyncMessageBroker<{msgType}>), scopedLt));");
+            sb.AppendLine($"            services.Add(new ServiceDescriptor(typeof(IScopedAsyncSubscriber<{msgType}>), typeof(ScopedAsyncMessageBroker<{msgType}>), scopedLt));");
+            sb.AppendLine();
+        }
+
+        static void EmitKeyedRegistrations(StringBuilder sb, string keyType, string msgType)
+        {
+            sb.AppendLine($"            services.Add(new ServiceDescriptor(typeof(MessageBrokerCore<{keyType}, {msgType}>), typeof(MessageBrokerCore<{keyType}, {msgType}>), psLifetime));");
+            sb.AppendLine($"            services.Add(new ServiceDescriptor(typeof(IPublisher<{keyType}, {msgType}>), typeof(MessageBroker<{keyType}, {msgType}>), psLifetime));");
+            sb.AppendLine($"            services.Add(new ServiceDescriptor(typeof(ISubscriber<{keyType}, {msgType}>), typeof(MessageBroker<{keyType}, {msgType}>), psLifetime));");
+            sb.AppendLine($"            services.Add(new ServiceDescriptor(typeof(AsyncMessageBrokerCore<{keyType}, {msgType}>), typeof(AsyncMessageBrokerCore<{keyType}, {msgType}>), psLifetime));");
+            sb.AppendLine($"            services.Add(new ServiceDescriptor(typeof(IAsyncPublisher<{keyType}, {msgType}>), typeof(AsyncMessageBroker<{keyType}, {msgType}>), psLifetime));");
+            sb.AppendLine($"            services.Add(new ServiceDescriptor(typeof(IAsyncSubscriber<{keyType}, {msgType}>), typeof(AsyncMessageBroker<{keyType}, {msgType}>), psLifetime));");
+            sb.AppendLine($"            services.Add(new ServiceDescriptor(typeof(SingletonMessageBrokerCore<{keyType}, {msgType}>), typeof(SingletonMessageBrokerCore<{keyType}, {msgType}>), singletonLt));");
+            sb.AppendLine($"            services.Add(new ServiceDescriptor(typeof(ISingletonPublisher<{keyType}, {msgType}>), typeof(SingletonMessageBroker<{keyType}, {msgType}>), singletonLt));");
+            sb.AppendLine($"            services.Add(new ServiceDescriptor(typeof(ISingletonSubscriber<{keyType}, {msgType}>), typeof(SingletonMessageBroker<{keyType}, {msgType}>), singletonLt));");
+            sb.AppendLine($"            services.Add(new ServiceDescriptor(typeof(SingletonAsyncMessageBrokerCore<{keyType}, {msgType}>), typeof(SingletonAsyncMessageBrokerCore<{keyType}, {msgType}>), singletonLt));");
+            sb.AppendLine($"            services.Add(new ServiceDescriptor(typeof(ISingletonAsyncPublisher<{keyType}, {msgType}>), typeof(SingletonAsyncMessageBroker<{keyType}, {msgType}>), singletonLt));");
+            sb.AppendLine($"            services.Add(new ServiceDescriptor(typeof(ISingletonAsyncSubscriber<{keyType}, {msgType}>), typeof(SingletonAsyncMessageBroker<{keyType}, {msgType}>), singletonLt));");
+            sb.AppendLine($"            services.Add(new ServiceDescriptor(typeof(ScopedMessageBrokerCore<{keyType}, {msgType}>), typeof(ScopedMessageBrokerCore<{keyType}, {msgType}>), scopedLt));");
+            sb.AppendLine($"            services.Add(new ServiceDescriptor(typeof(IScopedPublisher<{keyType}, {msgType}>), typeof(ScopedMessageBroker<{keyType}, {msgType}>), scopedLt));");
+            sb.AppendLine($"            services.Add(new ServiceDescriptor(typeof(IScopedSubscriber<{keyType}, {msgType}>), typeof(ScopedMessageBroker<{keyType}, {msgType}>), scopedLt));");
+            sb.AppendLine($"            services.Add(new ServiceDescriptor(typeof(ScopedAsyncMessageBrokerCore<{keyType}, {msgType}>), typeof(ScopedAsyncMessageBrokerCore<{keyType}, {msgType}>), scopedLt));");
+            sb.AppendLine($"            services.Add(new ServiceDescriptor(typeof(IScopedAsyncPublisher<{keyType}, {msgType}>), typeof(ScopedAsyncMessageBroker<{keyType}, {msgType}>), scopedLt));");
+            sb.AppendLine($"            services.Add(new ServiceDescriptor(typeof(IScopedAsyncSubscriber<{keyType}, {msgType}>), typeof(ScopedAsyncMessageBroker<{keyType}, {msgType}>), scopedLt));");
+            sb.AppendLine();
+        }
+    }
+
+    internal class GeneratorModel
+    {
+        public List<string> KeylessMessageTypes { get; set; } = new();
+        public List<string> MessageTypes { get; set; } = new();
+        public List<HandlerRegistration> RequestHandlers { get; set; } = new();
+        public List<FilterRegistration> FilterTypes { get; set; } = new();
+        public List<(string KeyType, string MessageType)> KeyedTypes { get; set; } = new();
+    }
+
+    internal class HandlerRegistration
+    {
+        public string HandlerTypeName { get; set; } = "";
+        public string RequestType { get; set; } = "";
+        public string ResponseType { get; set; } = "";
+        public bool IsAsync { get; set; }
+    }
+
+    internal class FilterRegistration
+    {
+        public string TypeName { get; set; } = "";
+        public FilterKind FilterKind { get; set; }
+        public string[] TypeArgs { get; set; } = System.Array.Empty<string>();
+    }
+
+    internal enum FilterKind
+    {
+        MessageHandler,
+        AsyncMessageHandler,
+        RequestHandler,
+        AsyncRequestHandler,
+    }
+}
