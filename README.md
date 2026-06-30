@@ -1325,6 +1325,108 @@ static void RegisterRequest<TRequest, TResponse, THandler>(IContainerBuilder bui
 
 Also you can use `GlobalMessagePipe` and `MessagePipe Diagnostics` window. see: [Global provider](#global-provider) and [Managing Subscription and Diagnostics](#managing-subscription-and-diagnostics) section.
 
+Native AOT Support
+---
+MessagePipe supports .NET Native AOT (Ahead-of-Time) compilation through its source generator. This enables single-file deployments with fast startup times, ideal for cloud-native and edge scenarios.
+
+### Setup
+
+1. Add the MyMessagePipe.Aot package to your project:
+
+```xml
+<ItemGroup>
+  <PackageReference Include="MyMessagePipe.Aot" Version="x.x.x" />
+  <PackageReference Include="MyMessagePipe.SourceGenerator.Aot" Version="x.x.x"
+                    OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+</ItemGroup>
+```
+
+2. Enable AOT in your project file:
+
+```xml
+<PropertyGroup>
+  <PublishAot>true</PublishAot>
+  <IlcTrimMetadata>true</IlcTrimMetadata>
+</PropertyGroup>
+```
+
+3. Use `AddMessagePipeAot()` instead of `AddMessagePipe()`:
+
+```csharp
+using MessagePipe;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+
+var builder = Host.CreateApplicationBuilder(args);
+
+// Use AOT-safe registration (generates closed-generic DI registrations at compile time)
+builder.Services.AddMessagePipeAot(options =>
+{
+    options.EnableAutoRegistration = false; // Not needed for AOT
+});
+
+var host = builder.Build();
+await host.RunAsync();
+```
+
+### How It Works
+
+The Source Generator scans your code at compile time and discovers:
+
+| Discovery Method | Example | Generated Registration |
+|-----------------|---------|----------------------|
+| Implementing `IMessageHandler<T>` | `class MyHandler : IMessageHandler<OrderEvent>` | `IPublisher<OrderEvent>`, `ISubscriber<OrderEvent>` + all variants |
+| Implementing `IRequestHandlerCore<TReq,TRes>` | `class CalcHandler : IRequestHandlerCore<Req, Res>` | `IRequestHandler<Req,Res>`, `IRequestAllHandler<Req,Res>` |
+| Constructor parameters | `ctor(IPublisher<string, ChatMsg> pub)` | Keyed `IPublisher<string, ChatMsg>` + all variants |
+| `GetRequiredService<T>()` calls | `provider.GetRequiredService<ISubscriber<LogMsg>>()` | `ISubscriber<LogMsg>` + all variants |
+| Inheriting Filter base classes | `class MyFilter : MessageHandlerFilter<OrderEvent>` | `MyFilter` registered as Transient |
+| `[PreserveForAot]` attribute | `[PreserveForAot(typeof(IPublisher<MyMsg>))]` | Explicitly preserved types |
+
+### Using PreserveForAot Attribute
+
+For types that cannot be discovered automatically (e.g., used via reflection or in third-party assemblies), use the `[PreserveForAot]` attribute:
+
+```csharp
+using MessagePipe;
+
+[PreserveForAot(typeof(IPublisher<ImportantEvent>), typeof(ISubscriber<ImportantEvent>))]
+public class MyAotConfiguration
+{
+    // This ensures ImportantEvent-related types are registered for AOT
+}
+```
+
+### Known Limitations
+
+1. **`AddMessagePipe()` is not AOT-safe** - The original reflection-based registration method works in JIT mode but will fail in AOT. Always use `AddMessagePipeAot()` for AOT scenarios.
+
+2. **Filter pipeline reflection** - Some filter operations using `GetCustomAttributes()` and `MakeGenericType()` may trigger trim warnings. For best results, avoid complex global filter combinations in AOT scenarios.
+
+3. **StackTrace diagnostics** - `MessagePipeDiagnosticsInfo` uses `StackFrame.GetMethod()` which is incomplete in AOT. Consider disabling `EnableCaptureStackTrace` for AOT builds.
+
+4. **Source Generator scope** - The generator only scans the consuming assembly. To register handlers from other assemblies, reference the types via `GetRequiredService<T>()` or apply `[PreserveForAot]`.
+
+### Verification
+
+To verify your AOT build:
+
+```bash
+dotnet publish -c Release -p:PublishAot=true
+```
+
+Run the published executable to ensure all message types work correctly. The test projects demonstrate comprehensive AOT coverage with 17 test scenarios.
+
+### Available AOT Packages
+
+| Package | Description |
+|---------|-------------|
+| `MyMessagePipe.Aot` | Core library with Native AOT support |
+| `MyMessagePipe.SourceGenerator.Aot` | Source generator for AOT-safe DI registration |
+| `MyMessagePipe.Interprocess.Aot` | Interprocess communication extensions (AOT-compatible) |
+| `MyMessagePipe.Analyzer.Aot` | Roslyn analyzers to prevent subscription leaks |
+
+**Note:** `MyMessagePipe.Redis.Aot` and `MyMessagePipe.Nats.Aot` are not available due to third-party dependency AOT compatibility issues.
+
 License
 ---
 This library is licensed under the MIT License.

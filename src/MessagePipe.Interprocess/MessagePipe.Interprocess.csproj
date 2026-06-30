@@ -6,8 +6,9 @@
     <Configurations>Debug;Release;</Configurations>
 
     <!-- NuGet Packaging -->
-    <PackageTags>pubsub;eventaggregator</PackageTags>
-    <Description>Interprocess extensions for MessagePipe.</Description>
+    <PackageId>MyMessagePipe.Interprocess.Aot</PackageId>
+    <PackageTags>pubsub;eventaggregator;aot;native-aot;interprocess</PackageTags>
+    <Description>Interprocess extensions for MyMessagePipe with Native AOT support.</Description>
     <SignAssembly>true</SignAssembly>
     <IsPackable>true</IsPackable>
   </PropertyGroup>

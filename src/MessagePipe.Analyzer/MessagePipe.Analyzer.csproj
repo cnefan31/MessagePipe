@@ -10,8 +10,9 @@
     <DevelopmentDependency>true</DevelopmentDependency>
 
     <!-- NuGet Packaging -->
-    <PackageTags>analyzer;</PackageTags>
-    <Description>Analyzers of MessagePipe to prevent subscription leak.</Description>
+    <PackageId>MyMessagePipe.Analyzer.Aot</PackageId>
+    <PackageTags>analyzer;aot;native-aot;</PackageTags>
+    <Description>Analyzers of MyMessagePipe to prevent subscription leak with Native AOT support.</Description>
     <SignAssembly>true</SignAssembly>
     <IsPackable>true</IsPackable>
   </PropertyGroup>
