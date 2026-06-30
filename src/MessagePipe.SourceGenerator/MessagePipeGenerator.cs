@@ -133,7 +133,7 @@ namespace MessagePipe
                 .Where(static x => x != default((INamedTypeSymbol, List<INamedTypeSymbol>)))
                 .Collect();
 
-            context.RegisterSourceOutput(collected.Combine(resolveCalls).Combine(preserveForAotTypes), static (spc, combined) =>
+            context.RegisterSourceOutput(collected.Combine(resolveCalls).Combine(preserveForAotTypes), (spc, combined) =>
             {
                 var ((types, resolvedTypes), preserveForAotData) = combined;
                 var model = AnalyzeTypes(types!, resolvedTypes!, preserveForAotData!);
