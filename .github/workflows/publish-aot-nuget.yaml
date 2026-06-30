@@ -31,7 +31,11 @@ jobs:
       - run: dotnet build ./tools/PostBuildUtility/ -c Release
       
       # Build all AOT packages (only fully AOT-compatible ones)
-      - run: dotnet build -c Release -p:Version=${{ inputs.tag }} ./src/MessagePipe/MessagePipe.csproj ./src/MessagePipe.SourceGenerator/MessagePipe.SourceGenerator.csproj ./src/MessagePipe.Interprocess/MessagePipe.Interprocess.csproj ./src/MessagePipe.Analyzer/MessagePipe.Analyzer.csproj
+      - run: |
+          dotnet build ./src/MessagePipe/MessagePipe.csproj -c Release -p:Version=${{ inputs.tag }}
+          dotnet build ./src/MessagePipe.SourceGenerator/MessagePipe.SourceGenerator.csproj -c Release -p:Version=${{ inputs.tag }}
+          dotnet build ./src/MessagePipe.Interprocess/MessagePipe.Interprocess.csproj -c Release -p:Version=${{ inputs.tag }}
+          dotnet build ./src/MessagePipe.Analyzer/MessagePipe.Analyzer.csproj -c Release -p:Version=${{ inputs.tag }}
       
       # Run tests (optional, can be skipped for AOT-only publish)
       - run: dotnet test -c Release --no-build --filter "FullyQualifiedName~Aot"
