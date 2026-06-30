@@ -6,8 +6,9 @@
     <Configurations>Debug;Release;WinBenchmark</Configurations>
 
     <!-- NuGet Packaging -->
-    <PackageTags>pubsub;eventaggregator</PackageTags>
-    <Description>High performance in-memory/distributed messaging pipeline for .NET and Unity.</Description>
+    <PackageId>MyMessagePipe.Aot</PackageId>
+    <PackageTags>pubsub;eventaggregator;aot;native-aot</PackageTags>
+    <Description>High performance in-memory/distributed messaging pipeline for .NET and Unity with Native AOT support.</Description>
     <SignAssembly>true</SignAssembly>
     <IsPackable>true</IsPackable>
     <IsTrimmable>true</IsTrimmable>

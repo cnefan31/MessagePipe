@@ -1,1 +1,45 @@
-Nothing should be ignored based on the provided file changes, as they consist only of source code files (.cs) and a documentation file (.md).
+```gitignore
+# Build artifacts
+bin/
+obj/
+out/
+dist/
+build/
+*.dll
+*.exe
+*.pdb
+*.so
+*.dylib
+*.nupkg
+*.snupkg
+
+# Dependencies
+packages/
+node_modules/
+vendor/
+
+# Logs
+*.log
+**/logs/
+
+# Environment
+.env
+.env.local
+.env.*
+!.env.example
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test coverage
+coverage/
+htmlcov/
+*.coverage
+```

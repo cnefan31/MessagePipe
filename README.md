@@ -1331,12 +1331,12 @@ MessagePipe supports .NET Native AOT (Ahead-of-Time) compilation through its sou
 
 ### Setup
 
-1. Add the MessagePipe.SourceGenerator package to your project:
+1. Add the MyMessagePipe.Aot package to your project:
 
 ```xml
 <ItemGroup>
-  <PackageReference Include="MessagePipe" Version="x.x.x" />
-  <PackageReference Include="MessagePipe.SourceGenerator" Version="x.x.x"
+  <PackageReference Include="MyMessagePipe.Aot" Version="x.x.x" />
+  <PackageReference Include="MyMessagePipe.SourceGenerator.Aot" Version="x.x.x"
                     OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
 </ItemGroup>
 ```
@@ -1414,7 +1414,18 @@ To verify your AOT build:
 dotnet publish -c Release -p:PublishAot=true
 ```
 
-Run the published executable to ensure all message types work correctly. The test projects `MessagePipe.AotTest` and `MessagePipe.AotHostTest` demonstrate comprehensive AOT coverage with 17 test scenarios.
+Run the published executable to ensure all message types work correctly. The test projects demonstrate comprehensive AOT coverage with 17 test scenarios.
+
+### Available AOT Packages
+
+| Package | Description |
+|---------|-------------|
+| `MyMessagePipe.Aot` | Core library with Native AOT support |
+| `MyMessagePipe.SourceGenerator.Aot` | Source generator for AOT-safe DI registration |
+| `MyMessagePipe.Interprocess.Aot` | Interprocess communication extensions (AOT-compatible) |
+| `MyMessagePipe.Analyzer.Aot` | Roslyn analyzers to prevent subscription leaks |
+
+**Note:** `MyMessagePipe.Redis.Aot` and `MyMessagePipe.Nats.Aot` are not available due to third-party dependency AOT compatibility issues.
 
 License
 ---
