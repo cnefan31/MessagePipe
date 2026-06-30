@@ -136,13 +136,13 @@ namespace MessagePipe
             context.RegisterSourceOutput(collected.Combine(resolveCalls).Combine(preserveForAotTypes), static (spc, combined) =>
             {
                 var ((types, resolvedTypes), preserveForAotData) = combined;
-                var model = AnalyzeTypes(types!, resolvedTypes!, preserveForAotData!);
+                var model = AnalyzeTypes(types!, resolvedTypes!, preserveForAotData);
                 var source = GenerateSource(model);
                 spc.AddSource("MessagePipeGeneratedInitializer.g.cs", source);
             });
         }
 
-        static GeneratorModel AnalyzeTypes(ImmutableArray<INamedTypeSymbol?> types, ImmutableArray<INamedTypeSymbol?> resolvedTypes, ImmutableArray<dynamic?> preserveForAotData)
+        static GeneratorModel AnalyzeTypes(ImmutableArray<INamedTypeSymbol?> types, ImmutableArray<INamedTypeSymbol?> resolvedTypes, ImmutableArray<(INamedTypeSymbol ParentType, List<INamedTypeSymbol> TypesToPreserve)?> preserveForAotData)
         {
             var model = new GeneratorModel();
 
@@ -152,7 +152,7 @@ namespace MessagePipe
                 if (item == null) continue;
                 
                 // Process the parent type marked with [PreserveForAot]
-                var parentType = item.ParentType as INamedTypeSymbol;
+                var parentType = item.Value.ParentType;
                 if (parentType != null && !parentType.IsAbstract && !parentType.IsStatic)
                 {
                     // Add the parent type itself for scanning
@@ -160,7 +160,7 @@ namespace MessagePipe
                 }
 
                 // Process explicitly listed types to preserve
-                var typesToPreserve = item.TypesToPreserve as System.Collections.Generic.List<INamedTypeSymbol>;
+                var typesToPreserve = item.Value.TypesToPreserve;
                 if (typesToPreserve != null)
                 {
                     foreach (var typeToPreserve in typesToPreserve)
