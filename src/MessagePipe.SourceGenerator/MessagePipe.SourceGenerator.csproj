@@ -6,13 +6,14 @@
     <EnforceExtendedAnalyzerRules>true</EnforceExtendedAnalyzerRules>
 
     <!-- NuGet Packaging -->
+    <PackageId>MyMessagePipe.SourceGenerator.Aot</PackageId>
     <IsPackable>true</IsPackable>
     <IncludeBuildOutput>false</IncludeBuildOutput>
     <IncludeSymbols>false</IncludeSymbols>
     <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
     <DevelopmentDependency>true</DevelopmentDependency>
-    <PackageTags>messagepipe;source-generator;aot</PackageTags>
-    <Description>AOT source generator for MessagePipe - generates closed-generic DI registrations at compile time.</Description>
+    <PackageTags>messagepipe;source-generator;aot;native-aot</PackageTags>
+    <Description>AOT source generator for MyMessagePipe - generates closed-generic DI registrations at compile time.</Description>
     <SignAssembly>true</SignAssembly>
   </PropertyGroup>
 
