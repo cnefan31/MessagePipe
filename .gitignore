@@ -7,30 +7,25 @@ obj/
 *.pdb
 *.so
 *.dylib
-*.jar
-*.war
-*.class
 
 # Dependencies
 packages/
 node_modules/
-venv/
-.venv/
-.env
-.env.local
-.env.*
-
-# IDE files
-.vscode/
-.idea/
-*.swp
-*.swo
-*.tmp
+.nuget/
 
 # Logs
 *.log
 
-# Generated files
-Generated/
-*_generated.*
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vs/
+.idea/
+*.userprefs
+
+# Temporary files
+*.tmp
+*.temp
 ```
